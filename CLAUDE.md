@@ -1,6 +1,6 @@
 # 星球内容助手
 
-每天自动抓取指定知识星球群组的「星主发布」和「精华」内容，写入飞书多维表格；Cookie 失效时通过飞书机器人 Webhook 报警。
+每天自动抓取指定知识星球群组的「星主发布」和「精华」内容，写入飞书多维表格；可选用大模型给每条内容生成一句话摘要+主题标签；Cookie 失效时通过飞书机器人 Webhook 报警。
 
 ## 抓取范围
 
@@ -43,6 +43,16 @@
 | 评论数 | 数字 | |
 | 原文链接 | 超链接 | 拼接的 wx.zsxq.com 详情页链接 |
 | 抓取时间 | 日期时间 | 本次任务运行时间，便于排查 |
+| 摘要 | 文本 | 大模型生成的一句话摘要（未配 LLM 时留空） |
+| 主题标签 | 多选 | 大模型从固定词表选的 1~3 个标签（词表见 summarizer.py TAGS） |
+
+- **AI 摘要+主题标签（可切换大模型）**：`src/summarizer.py` 是一层「可插拔适配器」，对外只暴露 `get_enricher()`，主流程（抓取/去重/写飞书）完全不知道背后用哪个模型。
+  - **为什么这样设计**：用户明确要求「以后可能从 Claude 换成 Codex/DeepSeek」。所以把「用哪个模型」做成配置项而非写死——换模型只改 `.env` 的 `LLM_*`，不改代码。
+  - **两个适配器**：`_OpenAICompatEnricher` 覆盖所有 OpenAI 兼容接口（DeepSeek / OpenAI/Codex / 通义 / Kimi / 智谱…，改 `LLM_BASE_URL`+`LLM_MODEL`+`LLM_API_KEY` 即可切换）；`_ClaudeEnricher` 用 Anthropic 官方 SDK。两者用同一套提示词和 JSON 输出结构，输出稳定、不锁定任何一家。SDK 都是延迟导入，只装你用的那个（见 requirements.txt）。
+  - **默认建议 DeepSeek**：这台机器是国内 Windows、定时任务本地后台跑。DeepSeek 国内直连不用代理，最适合无人值守；Claude/OpenAI 大陆访问通常要代理，后台代理一断任务就失败。质量上做一句话摘要+打标签，DeepSeek 够用。
+  - **未配置时不影响主流程**：`LLM_API_KEY` 留空时 `get_enricher()` 返回 None，抓取入库照常，只是不加工。加工是在 `topic_to_record` 里对新帖**入库前**内联完成的（一次写入，无需二次更新）；单条加工失败只留空该字段、不影响整条入库。
+  - **历史数据补加工**：AI 加工是后加的能力，之前抓的记录没有摘要/标签。配好 key 后运行一次 `src/backfill_enrich.py` 补齐（读「摘要」为空的行→加工→`batch_update` 写回，每 100 条一批）。之后新抓的自动加工，无需再跑。
+  - **标签词表固定**：`summarizer.py` 的 `TAGS` 必须与飞书「主题标签」多选字段的选项保持一致；模型只能从词表里选，解析时会过滤掉词表外的标签、空则回落到「其他」。改词表要两边一起改。
 
 ## 密钥与配置
 
@@ -60,8 +70,10 @@
 src/
   config.py         # 读取 .env
   zsxq_client.py    # 知识星球抓取
-  feishu_client.py  # 飞书多维表格读写
+  feishu_client.py  # 飞书多维表格读写（含 batch_update / list_all_records）
   notifier.py       # Webhook 报警
+  summarizer.py     # 可切换大模型「摘要+标签」适配器（get_enricher）
+  backfill_enrich.py# 给历史记录补做 AI 摘要+标签（配好 key 后跑一次）
   main.py           # 主流程入口
 scripts/
   run_daily.ps1     # 任务计划程序调用的入口脚本

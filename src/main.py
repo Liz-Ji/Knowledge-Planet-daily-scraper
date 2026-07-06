@@ -20,6 +20,7 @@ from src import config
 from src.zsxq_client import ZsxqClient, CookieExpiredError
 from src.feishu_client import FeishuClient
 from src.notifier import send_alert
+from src.summarizer import get_enricher
 
 SCOPE_LABEL = {"by_owner": "星主", "digests": "精华"}
 STATE_FILE = config.STATE_DIR / "seen_topic_ids.json"
@@ -74,8 +75,8 @@ def to_epoch_ms(iso_time: str) -> int:
         return int(datetime.now().timestamp() * 1000)
 
 
-def topic_to_record(topic: dict, group_name: str) -> dict:
-    return {
+def topic_to_record(topic: dict, group_name: str, enricher=None) -> dict:
+    record = {
         "帖子ID": topic["topic_id"],
         "星球名称": group_name,
         "类型": SCOPE_LABEL.get(topic["scope"], topic["scope"]),
@@ -88,6 +89,15 @@ def topic_to_record(topic: dict, group_name: str) -> dict:
         "原文链接": {"link": topic["url"], "text": "查看原文"},
         "抓取时间": int(datetime.now().timestamp() * 1000),
     }
+    # AI 加工：一句话摘要 + 主题标签（未配置模型或单条失败时跳过，不影响入库）
+    if enricher and topic["content"]:
+        try:
+            result = enricher.enrich(topic["content"], topic["title"], group_name)
+            record["摘要"] = result["摘要"]
+            record["主题标签"] = result["标签"]
+        except Exception:
+            logging.exception(f"  AI加工失败，留空: {topic['topic_id']}")
+    return record
 
 
 def run() -> int:
@@ -113,6 +123,7 @@ def run() -> int:
         config.FEISHU_APP_ID, config.FEISHU_APP_SECRET, config.FEISHU_APP_TOKEN, config.FEISHU_TABLE_ID
     )
     zsxq = ZsxqClient(config.ZSXQ_COOKIE)
+    enricher = get_enricher()  # 未配置 LLM key 时为 None，自动跳过 AI 加工
 
     seen_ids = load_seen_ids()
     if not seen_ids:
@@ -153,7 +164,7 @@ def run() -> int:
                 if topic["topic_id"] in seen_ids:
                     continue
                 seen_ids.add(topic["topic_id"])
-                new_records.append(topic_to_record(topic, group_name))
+                new_records.append(topic_to_record(topic, group_name, enricher))
                 new_count += 1
             logging.info(f"  新增 {new_count} 条（本次抓取共 {len(topics)} 条）")
 

@@ -84,3 +84,41 @@ class FeishuClient:
             data = resp.json()
             if data.get("code") != 0:
                 raise RuntimeError(f"写入飞书表格失败: {data}")
+
+    def list_all_records(self, page_size: int = 500):
+        """遍历全部记录，返回 [{record_id, fields}, ...]。"""
+        items = []
+        page_token = None
+        page_size = min(page_size, 500)
+        while True:
+            params = {"page_size": page_size}
+            if page_token:
+                params["page_token"] = page_token
+            resp = requests.get(
+                self._table_url(), headers=self._auth_header(), params=params, timeout=15
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"读取飞书表格记录失败: {data}")
+            items.extend(data["data"].get("items", []))
+            if not data["data"].get("has_more"):
+                break
+            page_token = data["data"].get("page_token")
+        return items
+
+    def batch_update_records(self, updates: list):
+        """updates: [{"record_id":..., "fields":{...}}, ...]，一次最多 500 条。"""
+        if not updates:
+            return
+        for i in range(0, len(updates), 500):
+            chunk = updates[i : i + 500]
+            body = {"records": [{"record_id": u["record_id"], "fields": u["fields"]} for u in chunk]}
+            resp = requests.post(
+                self._table_url("/batch_update"),
+                headers=self._json_headers(),
+                json=body,
+                timeout=20,
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"更新飞书表格失败: {data}")

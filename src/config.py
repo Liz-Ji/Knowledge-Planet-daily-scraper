@@ -16,6 +16,13 @@ FEISHU_ALERT_WEBHOOK = os.getenv("FEISHU_ALERT_WEBHOOK", "")
 
 ZSXQ_COOKIE = os.getenv("ZSXQ_COOKIE", "")
 
+# 大模型「摘要+标签」加工配置（可切换）。留空 LLM_API_KEY 则跳过加工。
+# LLM_PROVIDER: deepseek / openai / claude / 其它 OpenAI 兼容服务
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+
 STATE_DIR = ROOT_DIR / "state"
 LOG_DIR = ROOT_DIR / "logs"
 
