@@ -16,6 +16,8 @@ from src.feishu_client import FeishuClient
 from src.summarizer import get_enricher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+for _noisy in ("httpx", "openai", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
 def main():

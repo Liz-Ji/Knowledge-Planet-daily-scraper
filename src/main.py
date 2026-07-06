@@ -35,6 +35,9 @@ def setup_logging():
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.FileHandler(log_file, encoding="utf-8"), logging.StreamHandler()],
     )
+    # 降低第三方库噪声（openai/httpx 会把每次请求刷到 INFO）
+    for noisy in ("httpx", "openai", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def today_str() -> str:
