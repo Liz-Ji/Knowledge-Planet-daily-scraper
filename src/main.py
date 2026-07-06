@@ -1,4 +1,13 @@
-"""每日定时任务入口：抓取知识星球(星主+精华) -> 写入飞书多维表格。"""
+"""每日抓取任务入口：抓取知识星球(星主+精华) -> 写入飞书多维表格。
+
+由 Windows 任务计划程序在「每次登录」时触发（详见 scripts/setup_task.ps1）。
+配合下面几条逻辑，实现「每天第一次开机抓一次、失败自动重试并提醒、缺勤自动补齐」：
+
+1. 每天只成功抓取一次：成功后记 state/last_success_date.json，当天再触发直接跳过。
+2. 抓取失败或不完整：进程以非 0 退出码结束，且「不」标记当天已完成，
+   任务计划程序会按设置自动重试；同时通过飞书机器人 Webhook 提醒。
+3. 缺勤补齐：zsxq 抓取采用「翻到已抓过的帖子为止」，多天没开机时下次开机会自动多翻几页补齐。
+"""
 import json
 import logging
 import sys
@@ -14,6 +23,7 @@ from src.notifier import send_alert
 
 SCOPE_LABEL = {"by_owner": "星主", "digests": "精华"}
 STATE_FILE = config.STATE_DIR / "seen_topic_ids.json"
+DONE_MARKER = config.STATE_DIR / "last_success_date.json"
 
 
 def setup_logging():
@@ -24,6 +34,24 @@ def setup_logging():
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.FileHandler(log_file, encoding="utf-8"), logging.StreamHandler()],
     )
+
+
+def today_str() -> str:
+    return f"{datetime.now():%Y-%m-%d}"
+
+
+def already_done_today() -> bool:
+    if DONE_MARKER.exists():
+        try:
+            return json.loads(DONE_MARKER.read_text(encoding="utf-8")).get("date") == today_str()
+        except Exception:
+            return False
+    return False
+
+
+def mark_done_today():
+    config.STATE_DIR.mkdir(exist_ok=True)
+    DONE_MARKER.write_text(json.dumps({"date": today_str()}, ensure_ascii=False), encoding="utf-8")
 
 
 def load_seen_ids() -> set:
@@ -62,19 +90,24 @@ def topic_to_record(topic: dict, group_name: str) -> dict:
     }
 
 
-def main():
-    setup_logging()
-    logging.info("=== 开始每日抓取任务 ===")
+def run() -> int:
+    """执行一次抓取。返回进程退出码：0=成功，1=失败/不完整（供任务计划程序判断是否重试）。"""
+    logging.info("=== 开始抓取任务 ===")
+
+    force = "--force" in sys.argv
+    if already_done_today() and not force:
+        logging.info(f"今天({today_str()})已成功抓取过，跳过本次触发（加 --force 可强制重跑）")
+        return 0
 
     groups = config.get_groups()
     if not groups:
         logging.error("未配置 ZSXQ_GROUPS，退出")
-        return
+        return 1
 
     if not config.ZSXQ_COOKIE:
         logging.error("未配置 ZSXQ_COOKIE，退出")
         send_alert(config.FEISHU_ALERT_WEBHOOK, "【星球内容助手】未配置 ZSXQ_COOKIE，任务无法执行，请检查 .env")
-        return
+        return 1
 
     feishu = FeishuClient(
         config.FEISHU_APP_ID, config.FEISHU_APP_SECRET, config.FEISHU_APP_TOKEN, config.FEISHU_TABLE_ID
@@ -91,41 +124,80 @@ def main():
             logging.exception("同步飞书已有帖子ID失败，将按空集合处理")
 
     new_records = []
+    failures = []  # [(星球, 范围, 原因)]，任一失败则本次视为不完整，稍后重试
+
+    for group_id, group_name in groups:
+        for scope in config.SCOPES:
+            logging.info(f"抓取 {group_name}({group_id}) scope={scope}")
+            try:
+                topics = zsxq.fetch_topics(group_id, scope, known_ids=seen_ids)
+            except CookieExpiredError as e:
+                # Cookie 失效，后续都会失败，直接提醒并中止（不标记完成，下次开机重试）
+                logging.error(f"知识星球 Cookie 已失效: {e}")
+                send_alert(
+                    config.FEISHU_ALERT_WEBHOOK,
+                    "【星球内容助手】知识星球 Cookie 已失效，请重新登录 wx.zsxq.com 获取新 Cookie 更新到 .env。"
+                    "更新后下次开机会自动补齐这次没抓到的内容。\n详情: " + str(e),
+                )
+                # 先把已抓到的写进去，避免浪费
+                _write(feishu, new_records)
+                save_seen_ids(seen_ids)
+                return 1
+            except Exception as e:
+                logging.exception(f"  抓取失败: {group_name} {scope}")
+                failures.append((group_name, SCOPE_LABEL.get(scope, scope), str(e)))
+                continue
+
+            new_count = 0
+            for topic in topics:
+                if topic["topic_id"] in seen_ids:
+                    continue
+                seen_ids.add(topic["topic_id"])
+                new_records.append(topic_to_record(topic, group_name))
+                new_count += 1
+            logging.info(f"  新增 {new_count} 条（本次抓取共 {len(topics)} 条）")
+
     try:
-        for group_id, group_name in groups:
-            for scope in config.SCOPES:
-                logging.info(f"抓取 {group_name}({group_id}) scope={scope}")
-                topics = zsxq.fetch_topics(group_id, scope)
-                new_count = 0
-                for topic in topics:
-                    if topic["topic_id"] in seen_ids:
-                        continue
-                    seen_ids.add(topic["topic_id"])
-                    new_records.append(topic_to_record(topic, group_name))
-                    new_count += 1
-                logging.info(f"  新增 {new_count} 条（本次抓取共 {len(topics)} 条）")
-    except CookieExpiredError as e:
-        logging.error(f"知识星球 Cookie 已失效: {e}")
+        _write(feishu, new_records)
+    except Exception as e:
+        logging.exception("写入飞书失败")
+        send_alert(config.FEISHU_ALERT_WEBHOOK, f"【星球内容助手】写入飞书表格失败，将在下次开机重试。\n详情: {e}")
+        save_seen_ids(seen_ids)
+        return 1
+
+    save_seen_ids(seen_ids)
+
+    if failures:
+        detail = "\n".join(f"- {g} / {s}：{r[:80]}" for g, s, r in failures)
+        logging.warning(f"本次有 {len(failures)} 个范围抓取失败，未标记当天完成，将在下次开机重试")
         send_alert(
             config.FEISHU_ALERT_WEBHOOK,
-            f"【星球内容助手】知识星球 Cookie 已失效，请重新登录 wx.zsxq.com 获取新 Cookie 并更新 .env\n详情: {e}",
+            f"【星球内容助手】今天有部分内容没抓完（{len(failures)} 项），下次开机会自动补齐重试：\n{detail}",
         )
-        return
+        return 1
 
+    mark_done_today()
+    logging.info("=== 任务完成，已标记当天抓取成功 ===")
+    return 0
+
+
+def _write(feishu: FeishuClient, new_records: list):
     if new_records:
         feishu.batch_create_records(new_records)
         logging.info(f"已写入飞书表格 {len(new_records)} 条新记录")
     else:
         logging.info("没有新内容")
 
-    save_seen_ids(seen_ids)
-    logging.info("=== 任务结束 ===")
+
+def main() -> int:
+    setup_logging()
+    try:
+        return run()
+    except Exception as e:
+        logging.exception("任务异常终止")
+        send_alert(config.FEISHU_ALERT_WEBHOOK, f"【星球内容助手】任务执行异常，将在下次开机重试。\n详情: {e}")
+        return 1
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logging.exception("任务异常终止")
-        send_alert(config.FEISHU_ALERT_WEBHOOK, f"【星球内容助手】任务执行异常: {e}")
-        raise
+    sys.exit(main())

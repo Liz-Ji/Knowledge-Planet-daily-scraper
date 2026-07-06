@@ -20,7 +20,11 @@
 - **去重方案**: 本地维护 `state/seen_topic_ids.json` 记录已同步的帖子ID。首次运行时会先拉取飞书表格里已有的「帖子ID」种子去重集合，之后完全依赖本地状态文件（避免每次都全量拉表格，省 API 调用）。
   - 如果 `state/` 被误删，下次运行会自动从飞书表格重新同步已有ID，不会产生重复数据，但会有一次全表扫描开销。
 - **失败处理**: 知识星球返回 401/403 或响应体提示"登录"失效时，判定为 Cookie 过期，通过 `FEISHU_ALERT_WEBHOOK`（飞书群机器人）推送提醒文本消息，同时记录日志后退出，不重试（避免频繁触发风控）。
-- **定时方式**: Windows 任务计划程序（本机需保持开机），而非云端定时任务——本项目运行在用户本地 Windows 机器上，选择最简单可控的本地方案。计划任务通过 `scripts/run_daily.ps1` 调用 `.venv` 里的 Python 执行 `src/main.py`。
+- **定时方式**: Windows 任务计划程序，触发方式为**「每次登录」(AtLogOn)** 而非固定时间点，以贴合用户"每天第一次开机时抓取"的需求。任务通过 `scripts/run_daily.ps1` 调用 `.venv` 里的 Python 执行 `src/main.py`。用 `scripts/setup_task.ps1` 注册/更新任务。
+  - **每天只成功抓一次**：`main.py` 成功后写 `state/last_success_date.json`，当天再被触发（多次登录）会直接跳过。加 `--force` 可强制重跑。
+  - **失败/不完整自动重试 + 提醒**：任一星球×范围抓取失败、或写飞书失败时，`main.py` 以退出码 1 结束且「不」标记当天完成；任务计划设置了失败后每 30 分钟重试、最多 6 次（`RestartCount/RestartInterval`），同时通过飞书 Webhook 发提醒。这样即使用户当天不再重新登录，也会在 30 分钟内自动补抓。
+  - **缺勤补齐**：抓取采用「从最新往回翻页，直到整页都是已抓过的帖子就停」的策略（`fetch_topics(known_ids=...)`）。正常每天只翻 1 页；多天没开机时会自动多翻几页把落下的补齐，`max_pages=8`（≈160 条/范围）为安全上限。
+  - 注意：AtLogOn 触发依赖用户登录；若长期不开机，补齐范围受 `max_pages` 上限约束（超过 ~160 条的更老内容不会补）。
 
 ## 飞书多维表格字段
 
@@ -61,8 +65,10 @@ src/
   main.py           # 主流程入口
 scripts/
   run_daily.ps1     # 任务计划程序调用的入口脚本
+  setup_task.ps1    # 注册/更新任务计划（AtLogOn 触发，含失败重试设置）
 state/
-  seen_topic_ids.json  # 去重状态（不入库）
+  seen_topic_ids.json     # 去重状态（不入库）
+  last_success_date.json  # 当天是否已成功抓取的标记（不入库）
 logs/
   YYYY-MM-DD.log       # 每日运行日志（不入库）
 ```

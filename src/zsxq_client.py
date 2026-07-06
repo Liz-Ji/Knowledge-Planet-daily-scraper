@@ -90,11 +90,19 @@ class ZsxqClient:
 
         raise RuntimeError(f"ZSXQ 多次重试仍被拦截(1059): {last_info}")
 
-    def fetch_topics(self, group_id: str, scope: str, max_pages: int = 5, count: int = 20):
-        """抓取指定星球+范围(scope=by_owner/digests)的主题列表，按发布时间分页向后翻。
+    def fetch_topics(self, group_id: str, scope: str, known_ids=None,
+                     max_pages: int = 8, count: int = 20):
+        """抓取指定星球+范围(scope=by_owner/digests)的主题列表，按发布时间从新到旧分页。
 
-        返回标准化后的 topic 字典列表（未去重，调用方负责去重）。
+        增量/补齐逻辑：从最新一页开始往回翻，一旦某一页的帖子「全部」都在
+        known_ids 里（说明已经追上上次抓过的进度），就停止翻页。
+        - 正常每天跑：往往 1~2 页就追上，很省请求。
+        - 好几天没开机：会自动多翻几页把落下的补齐，直到 max_pages 上限保底。
+
+        known_ids 为空（首次运行）时会一直翻到 max_pages。
+        返回标准化后的 topic 字典列表（含已见过的，调用方负责去重）。
         """
+        known_ids = known_ids or set()
         results = []
         end_time = None
         for _ in range(max_pages):
@@ -107,8 +115,12 @@ class ZsxqClient:
             if not topics:
                 break
 
-            for topic in topics:
-                results.append(_normalize_topic(topic, group_id, scope))
+            page = [_normalize_topic(topic, group_id, scope) for topic in topics]
+            results.extend(page)
+
+            # 这一页全部已见过 -> 已追上进度，停止
+            if known_ids and all(t["topic_id"] in known_ids for t in page):
+                break
 
             end_time = topics[-1].get("create_time")
             if not end_time:
