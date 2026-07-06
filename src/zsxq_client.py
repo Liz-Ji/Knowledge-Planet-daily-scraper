@@ -91,7 +91,7 @@ class ZsxqClient:
         raise RuntimeError(f"ZSXQ 多次重试仍被拦截(1059): {last_info}")
 
     def fetch_topics(self, group_id: str, scope: str, known_ids=None,
-                     max_pages: int = 8, count: int = 20):
+                     max_pages: int = 8, count: int = 20, stop_before: str = None):
         """抓取指定星球+范围(scope=by_owner/digests)的主题列表，按发布时间从新到旧分页。
 
         增量/补齐逻辑：从最新一页开始往回翻，一旦某一页的帖子「全部」都在
@@ -125,6 +125,9 @@ class ZsxqClient:
             end_time = topics[-1].get("create_time")
             if not end_time:
                 break
+            # 深翻历史：这一页最老的帖子已早于 stop_before，说明范围翻够了，停止
+            if stop_before and end_time < stop_before:
+                break
             time.sleep(1)  # 限速，降低触发风控概率
 
         return results
@@ -137,6 +140,12 @@ class ZsxqClient:
 #   <e type="mention" uid="..." title="%40%E6%9F%90%E4%BA%BA" />
 # title 属性是 URL 编码后的展示文字，这里还原成纯文本。
 _ENTITY_RE = re.compile(r'<e\b[^>]*?\btitle="([^"]*)"[^>]*/?>')
+
+
+def topic_url(topic_id) -> str:
+    """帖子网页链接。用知识星球「复制链接」短链所跳转到的官方 mweb 详情页格式，
+    登录后作为成员可正常打开（旧的 dweb2/topic_detail 格式会提示没有权限）。"""
+    return f"https://wx.zsxq.com/mweb/views/topicdetail/topicdetail.html?topic_id={topic_id}"
 
 
 def clean_text(text: str) -> str:
@@ -197,7 +206,7 @@ def _normalize_topic(topic: dict, group_id: str, scope: str) -> dict:
         "create_time": topic.get("create_time", ""),
         "likes_count": topic.get("likes_count", 0) or 0,
         "comments_count": topic.get("comments_count", 0) or 0,
-        "url": f"https://wx.zsxq.com/dweb2/index/topic_detail/{topic_id}",
+        "url": topic_url(topic_id),
         "digested": bool(topic.get("digested", False)),
         "raw": topic,
     }
