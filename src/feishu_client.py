@@ -31,7 +31,11 @@ class FeishuClient:
         self._token_expire_at = time.time() + data.get("expire", 7200) - 300
         return self._token
 
-    def _headers(self):
+    def _auth_header(self):
+        # GET 请求不带 Content-Type，否则飞书会尝试解析空 body 返回 400
+        return {"Authorization": f"Bearer {self._get_tenant_token()}"}
+
+    def _json_headers(self):
         return {
             "Authorization": f"Bearer {self._get_tenant_token()}",
             "Content-Type": "application/json; charset=utf-8",
@@ -44,14 +48,14 @@ class FeishuClient:
         """拉取表中已有的全部「帖子ID」，用于去重（数据量大时建议改用本地状态文件辅助）。"""
         ids = set()
         page_token = None
+        page_size = min(page_size, 500)
         while True:
-            params = {"page_size": page_size, "field_names": '["帖子ID"]'}
+            params = {"page_size": page_size}
             if page_token:
                 params["page_token"] = page_token
             resp = requests.get(
-                self._table_url(), headers=self._headers(), params=params, timeout=15
+                self._table_url(), headers=self._auth_header(), params=params, timeout=15
             )
-            resp.raise_for_status()
             data = resp.json()
             if data.get("code") != 0:
                 raise RuntimeError(f"读取飞书表格记录失败: {data}")
@@ -73,11 +77,10 @@ class FeishuClient:
             body = {"records": [{"fields": r} for r in chunk]}
             resp = requests.post(
                 self._table_url("/batch_create"),
-                headers=self._headers(),
+                headers=self._json_headers(),
                 json=body,
                 timeout=20,
             )
-            resp.raise_for_status()
             data = resp.json()
             if data.get("code") != 0:
                 raise RuntimeError(f"写入飞书表格失败: {data}")

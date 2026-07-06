@@ -11,9 +11,12 @@
 ## 架构决策
 
 - **语言**: Python（生态成熟，requests 足够应对这种"爬 API + 调用飞书接口"的任务，无需引入框架）。
-- **知识星球访问方式**: 只用 `Authorization` 请求头（从浏览器 Cookie 中的 `zsxq_access_token` 提取）+ 自定义 `User-Agent`，不需要签名头。参考社区多个开源实现（chanwoood/crawl-zsxq 等）验证过，是最小可行方案。
-  - 风险：知识星球的反爬策略可能随时调整（历史上出现过要求签名头的版本）。如果某天所有请求都返回 401/登录态失效，但确认 Cookie 是新的，需要重新抓包对比 wx.zsxq.com 网页版请求头，可能需要补充签名逻辑。
-  - API 端点用的是 `v1.10`（`https://api.zsxq.com/v1.10/groups/{group_id}/topics`），这是社区验证过仍可用的版本号，不是最新版本号，但目前工作正常。
+- **知识星球访问方式**（2026-07-06 实测跑通）：
+  - 端点用 **v2**：`https://api.zsxq.com/v2/groups/{group_id}/topics?scope={by_owner|digests}&count=20`。最初试的 `v1.10` 会被拒（返回"版本太旧"）。
+  - 必带请求头：`Authorization`（= Cookie 里的 `zsxq_access_token`）、`User-Agent`、**`x-version: 2.64.0`**。缺 `x-version` 会被判定为"版本太旧"直接拒绝。不需要签名头。
+  - **反爬拦截 code=1059**："不支持非官方工具访问"，实测是**概率性拦截**（约 1/5 请求命中），并非硬封禁。客户端遇到 1059 会退避重试（最多 4 次），基本都能拿到数据。
+  - 风险：`x-version` 值会过期（试过 `2.71.0` 反而被更严的规则拒），拦截概率或规则可能随时收紧。若某天大量请求持续 1059、或提示"版本太旧"，先去 wx.zsxq.com 网页版抓包看当前 `x-version` 值和端点，更新 `zsxq_client.py` 顶部的 `X_VERSION` 常量。
+  - 正文里含 ZSXQ 行内实体标签（`<e type="text_bold"/hashtag/web/mention" title="URL编码文字"/>`），`clean_text()` 会把 `title` URL 解码还原成纯文本，去掉标签。
 - **去重方案**: 本地维护 `state/seen_topic_ids.json` 记录已同步的帖子ID。首次运行时会先拉取飞书表格里已有的「帖子ID」种子去重集合，之后完全依赖本地状态文件（避免每次都全量拉表格，省 API 调用）。
   - 如果 `state/` 被误删，下次运行会自动从飞书表格重新同步已有ID，不会产生重复数据，但会有一次全表扫描开销。
 - **失败处理**: 知识星球返回 401/403 或响应体提示"登录"失效时，判定为 Cookie 过期，通过 `FEISHU_ALERT_WEBHOOK`（飞书群机器人）推送提醒文本消息，同时记录日志后退出，不重试（避免频繁触发风控）。
@@ -43,7 +46,9 @@
 
 `secrets.txt.txt` 是早期临时记录密钥的文件，同样被 `.gitignore` 排除；密钥已迁移到 `.env`，该文件可以手动删除。
 
-`ZSXQ_COOKIE` 需要人工从浏览器获取（登录 wx.zsxq.com 后，F12 -> 网络 -> 任意 api.zsxq.com 请求 -> 复制 Cookie 请求头），无法自动化获取，失效后需要重复此步骤。
+`ZSXQ_COOKIE` 需要人工从浏览器获取（登录 wx.zsxq.com 后，F12 -> 网络 -> 任意 api.zsxq.com 请求 -> 复制 Cookie 请求头，或只复制其中的 `zsxq_access_token` 值），无法自动化获取，失效后需要重复此步骤。
+
+**踩坑记录（重要）**：机器上曾残留系统级环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，指向的是另一个飞书应用，导致鉴权 99991672（权限不足）。`python-dotenv` 默认**不覆盖**已存在的系统环境变量，所以 `config.py` 里用了 `load_dotenv(override=True)` 强制让项目 `.env` 生效。排查这类"curl 能通、脚本报权限错"的问题，先确认脚本实际读到的 app_id 是不是 `.env` 里那个。
 
 ## 目录结构
 
