@@ -1,0 +1,17 @@
+# 密钥与本地配置
+.env
+secrets.txt.txt
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 运行期数据（去重状态、日志），不入库
+state/*.json
+logs/*.log
+
+!state/.gitkeep
+!logs/.gitkeep

@@ -1,0 +1,63 @@
+# 星球内容助手
+
+每天自动抓取指定知识星球群组的「星主发布」和「精华」内容，写入飞书多维表格；Cookie 失效时通过飞书机器人 Webhook 报警。
+
+## 抓取范围
+
+- 姜胡说 (group_id: 552521142424)
+- 珍大户的经济圈 (group_id: 458522225218)
+- 只抓 `scope=by_owner`（星主发布）和 `scope=digests`（精华），不抓全部动态——避免表格被普通成员灌水内容淹没。
+
+## 架构决策
+
+- **语言**: Python（生态成熟，requests 足够应对这种"爬 API + 调用飞书接口"的任务，无需引入框架）。
+- **知识星球访问方式**: 只用 `Authorization` 请求头（从浏览器 Cookie 中的 `zsxq_access_token` 提取）+ 自定义 `User-Agent`，不需要签名头。参考社区多个开源实现（chanwoood/crawl-zsxq 等）验证过，是最小可行方案。
+  - 风险：知识星球的反爬策略可能随时调整（历史上出现过要求签名头的版本）。如果某天所有请求都返回 401/登录态失效，但确认 Cookie 是新的，需要重新抓包对比 wx.zsxq.com 网页版请求头，可能需要补充签名逻辑。
+  - API 端点用的是 `v1.10`（`https://api.zsxq.com/v1.10/groups/{group_id}/topics`），这是社区验证过仍可用的版本号，不是最新版本号，但目前工作正常。
+- **去重方案**: 本地维护 `state/seen_topic_ids.json` 记录已同步的帖子ID。首次运行时会先拉取飞书表格里已有的「帖子ID」种子去重集合，之后完全依赖本地状态文件（避免每次都全量拉表格，省 API 调用）。
+  - 如果 `state/` 被误删，下次运行会自动从飞书表格重新同步已有ID，不会产生重复数据，但会有一次全表扫描开销。
+- **失败处理**: 知识星球返回 401/403 或响应体提示"登录"失效时，判定为 Cookie 过期，通过 `FEISHU_ALERT_WEBHOOK`（飞书群机器人）推送提醒文本消息，同时记录日志后退出，不重试（避免频繁触发风控）。
+- **定时方式**: Windows 任务计划程序（本机需保持开机），而非云端定时任务——本项目运行在用户本地 Windows 机器上，选择最简单可控的本地方案。计划任务通过 `scripts/run_daily.ps1` 调用 `.venv` 里的 Python 执行 `src/main.py`。
+
+## 飞书多维表格字段
+
+表格 `app_token=WdRpbvdI5apvj8snHhWcUQxYnNe`，`table_id=tblJhtsdN2aVD4A9`（已存在的表，字段是本项目通过 API 创建的）：
+
+| 字段名 | 类型 | 说明 |
+|---|---|---|
+| 帖子ID | 文本（主键） | 用于去重，值为 ZSXQ 的 topic_id |
+| 星球名称 | 文本 | 姜胡说 / 珍大户的经济圈 |
+| 类型 | 单选（星主/精华） | 对应 scope=by_owner / scope=digests |
+| 作者 | 文本 | |
+| 标题 | 文本 | 仅文章类帖子有 |
+| 正文 | 文本 | |
+| 发布时间 | 日期时间 | |
+| 点赞数 | 数字 | |
+| 评论数 | 数字 | |
+| 原文链接 | 超链接 | 拼接的 wx.zsxq.com 详情页链接 |
+| 抓取时间 | 日期时间 | 本次任务运行时间，便于排查 |
+
+## 密钥与配置
+
+所有密钥放在 `.env`（已被 `.gitignore` 排除，不会提交到 Git）。`.env.example` 是给别人 clone 项目后参考的模板，不含真实值。
+
+`secrets.txt.txt` 是早期临时记录密钥的文件，同样被 `.gitignore` 排除；密钥已迁移到 `.env`，该文件可以手动删除。
+
+`ZSXQ_COOKIE` 需要人工从浏览器获取（登录 wx.zsxq.com 后，F12 -> 网络 -> 任意 api.zsxq.com 请求 -> 复制 Cookie 请求头），无法自动化获取，失效后需要重复此步骤。
+
+## 目录结构
+
+```
+src/
+  config.py         # 读取 .env
+  zsxq_client.py    # 知识星球抓取
+  feishu_client.py  # 飞书多维表格读写
+  notifier.py       # Webhook 报警
+  main.py           # 主流程入口
+scripts/
+  run_daily.ps1     # 任务计划程序调用的入口脚本
+state/
+  seen_topic_ids.json  # 去重状态（不入库）
+logs/
+  YYYY-MM-DD.log       # 每日运行日志（不入库）
+```
