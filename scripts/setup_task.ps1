@@ -34,3 +34,23 @@ Register-ScheduledTask -TaskName $TaskName `
 
 Write-Host "已注册任务计划：$TaskName（触发方式：每次登录）"
 Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State
+
+# ---- 每周精华周报：每周日 20:00 推送到飞书群 ----
+$WeeklyName = "星球内容助手-每周周报"
+$WeeklyRunner = Join-Path $ProjectRoot "scripts\run_weekly.ps1"
+$WeeklyAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WeeklyRunner`""
+$WeeklyTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 8:00PM
+$WeeklySettings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 30) `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+Register-ScheduledTask -TaskName $WeeklyName `
+    -Action $WeeklyAction -Trigger $WeeklyTrigger -Settings $WeeklySettings `
+    -Description "每周日20:00汇总过去一周星球精华，用大模型生成周报推送到飞书群" `
+    -Force | Out-Null
+
+Write-Host "已注册任务计划：$WeeklyName（触发方式：每周日 20:00）"
+Get-ScheduledTask -TaskName $WeeklyName | Select-Object TaskName, State

@@ -1,15 +1,9 @@
-"""可切换的大模型「摘要 + 主题标签」适配器。
+"""可切换的大模型能力层：既做「摘要+标签」，也提供通用 chat() 给周报/问答用。
 
 设计目标：主流程不关心背后用哪个模型，换模型只改 .env、不改代码。
-
-- 对外只暴露 get_enricher()：返回一个 enrich(text)->{"摘要":..,"标签":[..]} 的对象，
-  或 None（未配置 key 时，主流程自动跳过加工，不影响抓取入库）。
-- 底层由 .env 的 LLM_PROVIDER 选择适配器：
-    · deepseek / openai / 其它 OpenAI 兼容服务（通义、Kimi、智谱…）
-        → 共用 OpenAI Chat Completions 接口，改 LLM_BASE_URL + LLM_MODEL + LLM_API_KEY 即可切换
-    · claude
-        → 用 Anthropic 官方 SDK
-- 提示词与要求返回的 JSON 结构在所有模型间保持一致，输出稳定、不锁定任何一家。
+- get_enricher()：返回 enrich(text)->{"摘要":..,"标签":[..]} 的对象，或 None（未配 key）。
+- chat(system, user)：通用自由生成，周报汇总、问答综合都用它。
+- 底层由 .env 的 LLM_PROVIDER 选择：deepseek/openai/其它 OpenAI 兼容服务走同一接口；claude 走官方 SDK。
 """
 import json
 import re
@@ -23,7 +17,7 @@ TAGS = [
     "投资理念", "市场情绪", "创业经商", "认知成长", "其他",
 ]
 
-SYSTEM_PROMPT = (
+_SUMMARY_SYSTEM = (
     "你是知识星球内容的整理助手。给你一条帖子，你需要：\n"
     "1) 用一句话（不超过40个汉字）概括帖子的核心观点，作为摘要；\n"
     "2) 从给定的固定标签词表里，挑选1~3个最贴切的主题标签。\n"
@@ -33,7 +27,35 @@ SYSTEM_PROMPT = (
 )
 
 
-def _build_user_prompt(text: str, title: str = "", group: str = "") -> str:
+def is_configured() -> bool:
+    return bool((config.LLM_PROVIDER or "").strip() and config.LLM_API_KEY.strip())
+
+
+def chat(system: str, user: str, max_tokens: int = 1500, temperature: float = 0.3) -> str:
+    """通用单轮补全，返回纯文本。按 .env 的 provider 选择底层模型。"""
+    provider = (config.LLM_PROVIDER or "").strip().lower()
+    model = config.LLM_MODEL.strip()
+    if provider == "claude":
+        import anthropic  # 延迟导入
+        client = anthropic.Anthropic(api_key=config.LLM_API_KEY)
+        resp = client.messages.create(
+            model=model or "claude-opus-4-8", max_tokens=max_tokens,
+            system=system, messages=[{"role": "user", "content": user}],
+        )
+        return next((b.text for b in resp.content if b.type == "text"), "")
+    # 其余一律走 OpenAI 兼容接口（deepseek / openai / 通义 / kimi / 智谱 …）
+    from openai import OpenAI  # 延迟导入
+    client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL or None)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return resp.choices[0].message.content or ""
+
+
+def _build_summary_prompt(text: str, title: str = "", group: str = "") -> str:
     parts = []
     if group:
         parts.append(f"星球：{group}")
@@ -56,7 +78,6 @@ def _parse_result(raw: str) -> dict:
     tags = data.get("标签", [])
     if isinstance(tags, str):
         tags = [tags]
-    # 只保留词表内的标签，去重、限 3 个
     clean_tags = []
     for t in tags:
         t = str(t).strip()
@@ -67,60 +88,16 @@ def _parse_result(raw: str) -> dict:
     return {"摘要": summary, "标签": clean_tags[:3]}
 
 
-class _OpenAICompatEnricher:
-    """OpenAI 兼容接口适配器：DeepSeek / OpenAI(Codex) / 通义 / Kimi / 智谱 等。"""
-
-    def __init__(self, api_key: str, base_url: str, model: str):
-        from openai import OpenAI  # 延迟导入，只有用到才需要装 openai
-
-        self._client = OpenAI(api_key=api_key, base_url=base_url or None)
-        self._model = model
-
+class _Enricher:
     def enrich(self, text: str, title: str = "", group: str = "") -> dict:
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": _build_user_prompt(text, title, group)},
-            ],
-            temperature=0.2,
-        )
-        return _parse_result(resp.choices[0].message.content or "")
-
-
-class _ClaudeEnricher:
-    """Anthropic 官方 SDK 适配器。"""
-
-    def __init__(self, api_key: str, model: str):
-        import anthropic  # 延迟导入
-
-        self._client = anthropic.Anthropic(api_key=api_key)
-        self._model = model or "claude-opus-4-8"
-
-    def enrich(self, text: str, title: str = "", group: str = "") -> dict:
-        resp = self._client.messages.create(
-            model=self._model,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": _build_user_prompt(text, title, group)}],
-        )
-        raw = next((b.text for b in resp.content if b.type == "text"), "")
+        raw = chat(_SUMMARY_SYSTEM, _build_summary_prompt(text, title, group),
+                   max_tokens=1024, temperature=0.2)
         return _parse_result(raw)
 
 
 def get_enricher():
-    """根据 .env 配置返回一个 enricher；未配置 key 时返回 None（主流程跳过加工）。"""
-    provider = (config.LLM_PROVIDER or "").strip().lower()
-    api_key = config.LLM_API_KEY.strip()
-    if not provider or not api_key:
+    """未配置 key 时返回 None（主流程跳过加工）。"""
+    if not is_configured():
         logging.info("未配置 LLM_PROVIDER/LLM_API_KEY，本次跳过 AI 摘要+标签加工")
         return None
-
-    try:
-        if provider == "claude":
-            return _ClaudeEnricher(api_key, config.LLM_MODEL)
-        # 其余一律走 OpenAI 兼容接口（deepseek / openai / 通义 / kimi / 智谱 …）
-        return _OpenAICompatEnricher(api_key, config.LLM_BASE_URL, config.LLM_MODEL)
-    except Exception:
-        logging.exception(f"初始化 enricher 失败(provider={provider})，本次跳过加工")
-        return None
+    return _Enricher()

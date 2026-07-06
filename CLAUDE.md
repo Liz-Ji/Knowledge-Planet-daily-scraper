@@ -1,6 +1,6 @@
 # 星球内容助手
 
-每天自动抓取指定知识星球群组的「星主发布」和「精华」内容，写入飞书多维表格；可选用大模型给每条内容生成一句话摘要+主题标签；Cookie 失效时通过飞书机器人 Webhook 报警。
+每天自动抓取指定知识星球群组的「星主发布」和「精华」内容，写入飞书多维表格；可选用大模型给每条内容生成一句话摘要+主题标签；每周日自动生成精华周报推送到飞书群；提供命令行语义问答（RAG）；Cookie 失效时通过飞书机器人 Webhook 报警。
 
 ## 抓取范围
 
@@ -54,6 +54,23 @@
   - **历史数据补加工**：AI 加工是后加的能力，之前抓的记录没有摘要/标签。配好 key 后运行一次 `src/backfill_enrich.py` 补齐（读「摘要」为空的行→加工→`batch_update` 写回，每 100 条一批）。之后新抓的自动加工，无需再跑。
   - **标签词表固定**：`summarizer.py` 的 `TAGS` 必须与飞书「主题标签」多选字段的选项保持一致；模型只能从词表里选，解析时会过滤掉词表外的标签、空则回落到「其他」。改词表要两边一起改。
 
+- **通用 chat()**：`summarizer.py` 除了 `get_enricher()`，还导出 `chat(system, user)` 通用补全，周报和问答都用它——所以换模型（改 `.env` 的 `LLM_*`）时，摘要、周报、问答三处一起切换。
+
+- **每周精华周报**（`weekly_report.py`）：读飞书里过去 7 天入库的记录，按点赞取前 60 条，用 `chat()` 汇总成分主题、带 Top5+链接的中文周报，通过飞书群机器人 Webhook（复用 `notifier.send_alert`）推送。由任务计划「星球内容助手-每周周报」每周日 20:00 触发（`scripts/run_weekly.ps1`）。飞书文本消息不渲染 markdown，代码里会去掉 `**`/`#` 等符号。`--dry` 只打印不推送。
+
+- **命令行语义问答 / 轻量 RAG**（`ask.py`）：`python src/ask.py "姜胡说怎么看黄金"`。DeepSeek 无 embedding，所以用轻量方案：问题里点到星球名就按星球过滤 → jieba 抽关键词 → 按关键词在标题/正文/摘要的命中次数打分（点赞加权）取前 18 条 → 连同原文链接交给 `chat()` 综合回答并给出引用。选命令行是因为飞书内问答需要公网服务器接收消息，本地 Windows 做起来太重。
+
+- **两个一次性补数脚本**：`fix_links.py`（把所有记录的原文链接重建为正确 mweb 格式，幂等）；`backfill_history.py`（深翻历史补全指定年份全部内容，默认 2025；靠 `fetch_topics(stop_before=...)` 一直翻到年份边界）。
+
+### 两个飞书数据坑（重要）
+- **数字字段读回来是字符串**：飞书多维表格「点赞数/评论数」等 Number 字段，通过 API 读记录时返回的是字符串（如 `"14"`），不是数字。凡是拿它做排序/运算，必须先 `int(float(v))`（见 `weekly_report.py`/`ask.py` 的 `to_int`）。否则会静默排错序或报 `can't multiply sequence` 之类的错。
+- **GET 请求别带 Content-Type**：见 `feishu_client._auth_header`，否则 400（已记录在架构决策里）。
+
+### 原文链接格式
+知识星球「复制链接」是 `https://t.zsxq.com/xxxx` 短链，302 跳转到
+`https://wx.zsxq.com/mweb/views/topicdetail/topicdetail.html?topic_id={topic_id}`。
+这个 mweb 格式登录后作为成员可正常打开；早期用的 `dweb2/index/topic_detail/{id}` 会提示「没有权限」。统一由 `zsxq_client.topic_url()` 生成。
+
 ## 密钥与配置
 
 所有密钥放在 `.env`（已被 `.gitignore` 排除，不会提交到 Git）。`.env.example` 是给别人 clone 项目后参考的模板，不含真实值。
@@ -72,12 +89,17 @@ src/
   zsxq_client.py    # 知识星球抓取
   feishu_client.py  # 飞书多维表格读写（含 batch_update / list_all_records）
   notifier.py       # Webhook 报警
-  summarizer.py     # 可切换大模型「摘要+标签」适配器（get_enricher）
+  summarizer.py     # 可切换大模型层：get_enricher() 摘要+标签、chat() 通用补全
   backfill_enrich.py# 给历史记录补做 AI 摘要+标签（配好 key 后跑一次）
+  backfill_history.py# 深翻历史补全指定年份全部内容（默认2025，跑一次）
+  fix_links.py      # 批量重建原文链接为正确 mweb 格式（幂等）
+  weekly_report.py  # 每周精华周报生成+推送（--dry 只打印）
+  ask.py            # 命令行语义问答：python src/ask.py "问题"
   main.py           # 主流程入口
 scripts/
-  run_daily.ps1     # 任务计划程序调用的入口脚本
-  setup_task.ps1    # 注册/更新任务计划（AtLogOn 触发，含失败重试设置）
+  run_daily.ps1     # 每日抓取入口（任务计划调用）
+  run_weekly.ps1    # 每周周报入口（任务计划调用）
+  setup_task.ps1    # 注册/更新两个任务计划（每日AtLogOn + 每周日20:00）
 state/
   seen_topic_ids.json     # 去重状态（不入库）
   last_success_date.json  # 当天是否已成功抓取的标记（不入库）

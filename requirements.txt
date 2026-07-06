@@ -1,7 +1,8 @@
 requests>=2.31
 python-dotenv>=1.0
+jieba>=0.42          # 语义问答的中文关键词提取
 
-# AI 摘要+标签用（按你选的 provider 二选一装即可，不用两个都装）
+# AI 摘要+标签/周报/问答用（按你选的 provider 二选一装即可，不用两个都装）
 # deepseek / openai / 其它 OpenAI 兼容服务：
 openai>=1.0
 # claude：
