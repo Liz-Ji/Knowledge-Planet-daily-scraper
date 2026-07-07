@@ -105,6 +105,14 @@ def main():
         send_alert(config.FEISHU_ALERT_WEBHOOK, report)
         logging.info("周报已推送到飞书群")
 
+    # 每周同时全量刷新知识图谱综述（--dry 不刷，避免测试时空跑24次）
+    if not dry:
+        try:
+            from src import build_graph
+            build_graph.build(refresh=True)
+        except Exception:
+            logging.exception("刷新知识图谱失败")
+
 
 if __name__ == "__main__":
     main()

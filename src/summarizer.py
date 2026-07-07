@@ -10,6 +10,7 @@ import re
 import logging
 
 from src import config
+from src.topics import TOPIC_NAMES
 
 # 主题标签固定词表（必须与飞书「主题标签」多选字段的选项保持一致）
 TAGS = [
@@ -20,10 +21,10 @@ TAGS = [
 _SUMMARY_SYSTEM = (
     "你是知识星球内容的整理助手。给你一条帖子，你需要：\n"
     "1) 用一句话（不超过40个汉字）概括帖子的核心观点，作为摘要；\n"
-    "2) 从给定的固定标签词表里，挑选1~3个最贴切的主题标签。\n"
-    f"标签只能从这个词表里选，不要自造：{TAGS}\n"
+    f"2) 从固定标签词表里挑1~3个最贴切的主题标签（只能从中选，不要自造）：{TAGS}\n"
+    f"3) 从固定专题词表里挑【1个】最贴切的专题（只能从中选，不要自造）：{TOPIC_NAMES}\n"
     "只输出一个 JSON 对象，格式为："
-    '{"摘要": "一句话摘要", "标签": ["标签1", "标签2"]}，不要输出任何多余内容。'
+    '{"摘要": "一句话摘要", "标签": ["标签1"], "专题": "专题名"}，不要输出任何多余内容。'
 )
 
 
@@ -85,7 +86,10 @@ def _parse_result(raw: str) -> dict:
             clean_tags.append(t)
     if not clean_tags:
         clean_tags = ["其他"]
-    return {"摘要": summary, "标签": clean_tags[:3]}
+    topic = str(data.get("专题", "")).strip()
+    if topic not in TOPIC_NAMES:
+        topic = ""  # 词表外则留空，避免污染单选字段
+    return {"摘要": summary, "标签": clean_tags[:3], "专题": topic}
 
 
 class _Enricher:

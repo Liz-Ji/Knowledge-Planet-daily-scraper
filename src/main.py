@@ -98,6 +98,8 @@ def topic_to_record(topic: dict, group_name: str, enricher=None) -> dict:
             result = enricher.enrich(topic["content"], topic["title"], group_name)
             record["摘要"] = result["摘要"]
             record["主题标签"] = result["标签"]
+            if result.get("专题"):
+                record["专题"] = result["专题"]
         except Exception:
             logging.exception(f"  AI加工失败，留空: {topic['topic_id']}")
     return record
@@ -180,6 +182,14 @@ def run() -> int:
         return 1
 
     save_seen_ids(seen_ids)
+
+    # 刷新知识图谱（结构 + 帖子数变化的专题综述；未配 LLM 或失败都不影响抓取结果）
+    if enricher:
+        try:
+            from src import build_graph
+            build_graph.build(refresh=False)
+        except Exception:
+            logging.exception("刷新知识图谱失败（不影响抓取入库）")
 
     if failures:
         detail = "\n".join(f"- {g} / {s}：{r[:80]}" for g, s, r in failures)
