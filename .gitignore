@@ -19,3 +19,5 @@ logs/*.log
 # 生成的图谱与缓存（可随时重建，不入库）
 知识图谱.html
 state/graph_summaries.json
+graph_preview.html
+.claude/launch.json

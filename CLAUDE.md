@@ -63,6 +63,12 @@
 
 - **两个一次性补数脚本**：`fix_links.py`（把所有记录的原文链接重建为正确 mweb 格式，幂等）；`backfill_history.py`（深翻历史补全指定年份全部内容，默认 2025；靠 `fetch_topics(stop_before=...)` 一直翻到年份边界）。
 
+- **知识图谱（按专题学习）**：解决"记了一堆但连不起来、没法按专题学"的痛点。
+  - **专题体系**：`topics.py` 定义 24 个专题（含 5 大类），由全部内容用大模型提炼后人工收敛而来。每条帖子在加工时归「1 个」专题（`summarizer` 的 enrich 顺带产出，写回飞书「专题」单选字段）；历史用 `backfill_topics.py` 批量补（一次给模型 15 条）。
+  - **图谱生成**：`build_graph.py` 读飞书按专题聚合，生成独立 HTML（项目根 `知识图谱.html`）：中心「知识库」→ 5 大类 → 24 专题的思维导图，点专题看「脉络综述 + 帖子清单（跳原文）」。脉络综述调大模型、带缓存（`state/graph_summaries.json`），只在帖子数变化或 `--refresh` 时重算。
+  - **自动更新**：`main.py` 每日抓取成功后调 `build_graph.build(refresh=False)`（刷结构 + 帖子数变化的专题综述，很快）；`weekly_report.py` 每周 `build_graph.build(refresh=True)`（全量刷综述）。所以飞书新内容进来，图谱当天自动更新。
+  - **待做**：作者「文内引用」硬连接（帖子间 `<e type="web" href=…/topic/{id}>` 的引用关系）尚未接入图谱，需要重抓历史原始数据提取；这是把图谱从"专题聚合"升级成"真·关系图谱"的下一步。
+
 ### 两个飞书数据坑（重要）
 - **数字字段读回来是字符串**：飞书多维表格「点赞数/评论数」等 Number 字段，通过 API 读记录时返回的是字符串（如 `"14"`），不是数字。凡是拿它做排序/运算，必须先 `int(float(v))`（见 `weekly_report.py`/`ask.py` 的 `to_int`）。否则会静默排错序或报 `can't multiply sequence` 之类的错。
 - **GET 请求别带 Content-Type**：见 `feishu_client._auth_header`，否则 400（已记录在架构决策里）。
@@ -96,6 +102,9 @@ src/
   fix_links.py      # 批量重建原文链接为正确 mweb 格式（幂等）
   weekly_report.py  # 每周精华周报生成+推送（--dry 只打印）
   ask.py            # 命令行语义问答：python src/ask.py "问题"
+  topics.py         # 24个专题(含大类)分类体系（知识图谱骨架）
+  backfill_topics.py# 批量给历史记录归专题（配好 key 跑一次）
+  build_graph.py    # 生成/刷新知识图谱 HTML（--refresh 全量刷综述）
   main.py           # 主流程入口
 scripts/
   run_daily.ps1     # 每日抓取入口（任务计划调用）
