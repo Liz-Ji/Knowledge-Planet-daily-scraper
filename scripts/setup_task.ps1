@@ -12,8 +12,11 @@ $Runner = Join-Path $ProjectRoot "scripts\run_daily.ps1"
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Runner`""
 
-# 触发器：当前用户每次登录时（开机后第一次登录即触发）
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+# 触发器：双保险
+# - 每次登录（开机后第一次登录即触发）
+# - 每天 9:00 固定时间兜底（机器长开不重登时，靠这个到点也能跑；配合 StartWhenAvailable 错过会补跑）
+$TriggerLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$TriggerDaily = New-ScheduledTaskTrigger -Daily -At 9:00AM
 
 # 设置：
 # - StartWhenAvailable：错过的触发点在可用时补跑
@@ -28,11 +31,11 @@ $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 
 Register-ScheduledTask -TaskName $TaskName `
-    -Action $Action -Trigger $Trigger -Settings $Settings `
-    -Description "开机首次登录时抓取知识星球姜胡说/珍大户的经济圈的星主+精华内容写入飞书；当天成功一次后不再重复，失败自动重试并飞书提醒" `
+    -Action $Action -Trigger @($TriggerLogon, $TriggerDaily) -Settings $Settings `
+    -Description "每次登录 + 每天9:00抓取知识星球姜胡说/珍大户的经济圈的星主+精华内容写入飞书；当天成功一次后不再重复，失败自动重试并飞书提醒" `
     -Force | Out-Null
 
-Write-Host "已注册任务计划：$TaskName（触发方式：每次登录）"
+Write-Host "已注册任务计划：$TaskName（触发方式：每次登录 + 每天9:00）"
 Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State
 
 # ---- 每周精华周报：每周日 20:00 推送到飞书群 ----
