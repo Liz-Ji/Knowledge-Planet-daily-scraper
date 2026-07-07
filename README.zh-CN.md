@@ -6,6 +6,18 @@
 
 > 个人自用工具：把付费内容流沉淀成可检索、按专题组织的知识库。
 
+## 效果展示
+
+**各系统怎么串起来的**（大白话系统关系图）：
+
+![系统关系图](assets/architecture.svg)
+
+**知识图谱** —— 中心 → 5 大类 → 24 专题（每天自动重建；在网页里点某个专题，可看它的脉络综述和帖子，帖子按人物分组、标注已读/未读）：
+
+![知识图谱](assets/graph.svg)
+
+> 飞书表格实拍图和操作演示 GIF 放在 [`assets/`](assets/) 目录。想自己补：用 `Win + Shift + S` 截图、用 [ScreenToGif](https://www.screentogif.com/) 录 GIF，存成 `assets/feishu.png` / `assets/demo.gif`，再在这里引用即可。
+
 ## 功能
 
 - **每日抓取** —— 只抓 `scope=by_owner`（星主发布）和 `scope=digests`（精华），避免表格被普通成员灌水淹没。用本地状态文件去重。

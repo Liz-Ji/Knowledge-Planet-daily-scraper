@@ -6,6 +6,18 @@ Automatically scrapes the **owner posts** and **digests** of specified [ZSXQ (�
 
 > Personal, self-hosted tooling for turning a paid content feed into a searchable, topic-organized knowledge base.
 
+## Showcase
+
+**How the pieces fit together** (plain-language system map):
+
+![System architecture](assets/architecture.svg)
+
+**The knowledge graph** — center → 5 categories → 24 topics (auto-rebuilt daily; in the live HTML, click a topic to read its narrative overview and posts, grouped by author with read/unread tracking):
+
+![Knowledge graph](assets/graph.svg)
+
+> A screenshot of the Feishu table and an interaction GIF live under [`assets/`](assets/). To add your own: capture with `Win + Shift + S` (screenshot) or [ScreenToGif](https://www.screentogif.com/) (GIF), save as `assets/feishu.png` / `assets/demo.gif`, then reference them here.
+
 ## Features
 
 - **Daily scrape** — pulls `scope=by_owner` (owner posts) and `scope=digests` (digests) only, so the table isn't flooded by ordinary member chatter. Deduplicated via a local state file.
