@@ -36,7 +36,7 @@ def gen_overview(name, posts):
     if len(ps) > 60:
         step = len(ps) / 60.0
         ps = [ps[int(i * step)] for i in range(60)]
-    listing = "\n".join(f"{p['date']} {p['who']} 赞{p['likes']}：{p['sum']}" for p in ps)
+    listing = "\n".join(f"{p['date']} {p['planet']}·{p['author']} 赞{p['likes']}：{p['sum']}" for p in ps)
     SYS = ("你是投资/财经/个人成长内容的知识梳理专家。下面是某专题下的帖子摘要（按时间排序）。"
            "用250字以内写一段脉络综述：这个专题下的核心观点是什么、从早到晚观点如何演进或深化。"
            "纯文本，不要用markdown符号。")
@@ -57,7 +57,8 @@ def build(refresh=False):
         t = fd.get("发布时间") or 0
         by_topic[tp].append({
             "ts": t, "date": f"{datetime.fromtimestamp(t/1000):%Y-%m-%d}" if t else "",
-            "who": f"{fd.get('星球名称','')}·{fd.get('作者','')}",
+            "planet": fd.get("星球名称", ""), "author": fd.get("作者", "") or "（佚名）",
+            "id": str(fd.get("帖子ID", "")),
             "likes": to_int(fd.get("点赞数")),
             "sum": fd.get("摘要") or (fd.get("正文", "")[:50]),
             "link": (fd.get("原文链接") or {}).get("link", ""),
@@ -84,19 +85,19 @@ def build(refresh=False):
     config.STATE_DIR.mkdir(exist_ok=True)
     CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 组织数据（只保留有内容的专题）
+    # 组织数据（保留有内容专题的全部帖子；展示时在前端按人物分组+时间倒序）
     themes = {}
     for t in TOPIC_NAMES:
         posts = by_topic[t]
         if not posts:
             continue
-        posts.sort(key=lambda p: p["likes"], reverse=True)
         themes[t] = {
             "cat": TOPIC_CATEGORY[t],
             "overview": cache.get(t, {}).get("overview", ""),
             "count": len(posts),
-            "posts": [{"date": p["date"], "who": p["who"], "likes": p["likes"],
-                       "sum": p["sum"], "link": p["link"]} for p in posts[:50]],
+            "posts": [{"date": p["date"], "ts": p["ts"], "planet": p["planet"],
+                       "author": p["author"], "id": p["id"], "likes": p["likes"],
+                       "sum": p["sum"], "link": p["link"]} for p in posts],
         }
 
     total = sum(len(v) for v in by_topic.values())
@@ -161,15 +162,22 @@ h1{font-size:22px;font-weight:600;margin:0 0 2px}.sub{color:#888;font-size:13px;
 .card{background:#fff;border-radius:12px;padding:16px 20px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .nd:hover text,.cat:hover text{font-weight:600}
 #panel{margin-top:16px}
-.ov{background:#fbfaf7;border-left:3px solid #c77f2a;border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:8px;font-size:15px}
-.post{padding:9px 0;border-top:1px solid #eee}
+.ov{background:#fbfaf7;border-left:3px solid #c77f2a;border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:10px;font-size:15px}
+.author{margin:14px 0 2px;font-size:14px;font-weight:600;color:#444;border-bottom:1px solid #eee;padding-bottom:4px}
+.author span{font-weight:400;color:#aaa;font-size:12px}
+.post{display:flex;align-items:baseline;gap:8px;padding:8px 0;border-top:1px solid #f0f0f0}
+.dot{flex:0 0 auto;width:9px;height:9px;border-radius:50%;border:1.5px solid #1a6dc4;background:#1a6dc4;cursor:pointer;margin-top:6px}
+.post.read .dot{background:transparent;border-color:#bbb}
+.post .body{flex:1}
 .post a{color:#1a6dc4;text-decoration:none;font-size:14px}.post a:hover{text-decoration:underline}
-.meta{color:#999;font-size:12px;margin-top:2px}
+.post.read a{color:#999}
+.meta{color:#aaa;font-size:12px;margin-top:1px}
 .hint{color:#aaa;font-size:13px;margin:6px 0 10px}
+.tools{float:right;font-size:12px}.tools a{color:#1a6dc4;cursor:pointer;margin-left:10px;text-decoration:none}
 </style></head><body><div class="wrap">
 <h1>星球知识图谱</h1>
 <div class="sub">姜胡说 · 珍大户的经济圈　|　共 __TOTAL__ 条已归类　|　更新于 __UPDATED__</div>
-<div class="hint">点右侧任一专题查看脉络综述与帖子（点标题跳原文）；点大类可展开该类专题</div>
+<div class="hint">点右侧任一专题：帖子按人物分组、组内时间倒序；蓝点=未读，点标题看原文（自动标已读），点圆点可手动切换。已读状态存在本机浏览器。</div>
 <div class="card">__SVG__</div>
 <div id="panel"></div>
 </div>
@@ -177,17 +185,50 @@ h1{font-size:22px;font-weight:600;margin:0 0 2px}.sub{color:#888;font-size:13px;
 const DATA = __DATA__;
 const panel = document.getElementById('panel');
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function getRead(){try{return JSON.parse(localStorage.getItem('zsxq_read')||'{}');}catch(e){return {};}}
+function setRead(r){localStorage.setItem('zsxq_read',JSON.stringify(r));}
+let curTheme=null;
 function showTheme(t){
-  const d = DATA[t]; if(!d) return;
-  let rows = d.posts.map(p =>
-    '<div class="post"><a href="'+p.link+'" target="_blank" rel="noopener">'+esc(p.sum)+'</a>'
-    + '<div class="meta">'+esc(p.date)+' · '+esc(p.who)+' · 赞'+p.likes+'</div></div>').join('');
-  panel.innerHTML = '<div class="card"><div style="font-size:17px;font-weight:600;margin-bottom:2px">'+esc(t)
-    + ' <span style="font-size:13px;color:#999;font-weight:400">'+d.count+'篇</span></div>'
-    + (d.overview?'<div class="ov">'+esc(d.overview)+'</div>':'')
-    + (d.posts.length<d.count?'<div class="hint">按点赞展示前 '+d.posts.length+' 篇</div>':'')
-    + rows + '</div>';
+  const d = DATA[t]; if(!d) return; curTheme=t;
+  const read = getRead();
+  const groups = {};
+  d.posts.forEach(p=>{(groups[p.author]=groups[p.author]||[]).push(p);});
+  const authors = Object.keys(groups).sort((a,b)=>Math.max.apply(0,groups[b].map(p=>p.ts))-Math.max.apply(0,groups[a].map(p=>p.ts)));
+  let unread = d.posts.filter(p=>!read[p.id]).length;
+  let body='';
+  authors.forEach(au=>{
+    const ps = groups[au].slice().sort((a,b)=>b.ts-a.ts);
+    body += '<div class="author">'+esc(au)+' <span>'+ps.length+'篇</span></div>';
+    ps.forEach(p=>{
+      body += '<div class="post'+(read[p.id]?' read':'')+'" data-id="'+esc(p.id)+'">'
+        + '<span class="dot" title="点一下切换已读/未读"></span>'
+        + '<div class="body"><a href="'+p.link+'" target="_blank" rel="noopener">'+esc(p.sum)+'</a>'
+        + '<div class="meta">'+esc(p.date)+' · '+esc(p.planet)+' · 赞'+p.likes+'</div></div></div>';
+    });
+  });
+  panel.innerHTML = '<div class="card">'
+    + '<div class="tools"><a id="allread">全标已读</a><a id="allunread">全标未读</a></div>'
+    + '<div style="font-size:17px;font-weight:600;margin-bottom:2px">'+esc(t)
+    + ' <span style="font-size:13px;color:#999;font-weight:400">'+d.count+'篇 · 未读'
+    + '<b id="unreadn" style="color:#1a6dc4">'+unread+'</b></span></div>'
+    + (d.overview?'<div class="ov">'+esc(d.overview)+'</div>':'') + body + '</div>';
+  bind();
   panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function refreshUnread(){
+  const read=getRead();const d=DATA[curTheme];
+  document.getElementById('unreadn').textContent=d.posts.filter(p=>!read[p.id]).length;
+}
+function mark(id,val){const r=getRead();if(val)r[id]=1;else delete r[id];setRead(r);}
+function bind(){
+  panel.querySelectorAll('.post').forEach(el=>{
+    const id=el.dataset.id;
+    el.querySelector('.dot').addEventListener('click',()=>{const now=el.classList.toggle('read');mark(id,now);refreshUnread();});
+    el.querySelector('a').addEventListener('click',()=>{el.classList.add('read');mark(id,true);setTimeout(refreshUnread,50);});
+  });
+  const d=DATA[curTheme];
+  document.getElementById('allread').addEventListener('click',()=>{const r=getRead();d.posts.forEach(p=>r[p.id]=1);setRead(r);showTheme(curTheme);});
+  document.getElementById('allunread').addEventListener('click',()=>{const r=getRead();d.posts.forEach(p=>delete r[p.id]);setRead(r);showTheme(curTheme);});
 }
 function showCat(c){
   const ts = Object.keys(DATA).filter(t=>DATA[t].cat===c);
