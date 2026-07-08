@@ -190,6 +190,11 @@ def run() -> int:
             build_graph.build(refresh=False)
         except Exception:
             logging.exception("刷新知识图谱失败（不影响抓取入库）")
+    try:
+        from src import build_reading
+        build_reading.build()
+    except Exception:
+        logging.exception("刷新今日待看失败（不影响抓取入库）")
 
     if failures:
         detail = "\n".join(f"- {g} / {s}：{r[:80]}" for g, s, r in failures)

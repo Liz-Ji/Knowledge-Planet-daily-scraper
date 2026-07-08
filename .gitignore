@@ -21,3 +21,5 @@ logs/*.log
 state/graph_summaries.json
 graph_preview.html
 .claude/launch.json
+今日待看.html
+reading_preview.html
