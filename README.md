@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Automatically scrapes the **owner posts** and **digests** of specified [ZSXQ (知识星球)](https://zsxq.com) groups every day, writes them into a **Feishu (Lark) Bitable**, optionally uses an LLM to generate a one-line summary + topic tags for each post, classifies everything into topics and builds an auto-updating **knowledge graph**, pushes a **weekly digest** to a Feishu group, and offers a command-line **semantic Q&A**. Alerts you via a Feishu bot webhook when the login cookie expires.
+Automatically scrapes the **owner posts** and **digests** of specified [ZSXQ (知识星球)](https://zsxq.com) groups every day, writes them into a **Feishu (Lark) Bitable**, optionally uses an LLM to generate a one-line summary + topic tags for each post, classifies everything into topics and builds an auto-updating **knowledge graph** and a **daily reading queue**, pushes a **weekly digest** to a Feishu group, and offers a command-line **semantic Q&A**. Alerts you via a Feishu bot webhook when the login cookie expires.
 
 > Personal, self-hosted tooling for turning a paid content feed into a searchable, topic-organized knowledge base.
 
@@ -23,6 +23,7 @@ Automatically scrapes the **owner posts** and **digests** of specified [ZSXQ (�
 - **Daily scrape** — pulls `scope=by_owner` (owner posts) and `scope=digests` (digests) only, so the table isn't flooded by ordinary member chatter. Deduplicated via a local state file.
 - **Pluggable LLM enrichment** — one-line summary + topic tags + a single topic classification per post. Provider is swappable via `.env` (DeepSeek / OpenAI / Claude / any OpenAI-compatible API); the pipeline never hardcodes a model.
 - **Knowledge graph** — a self-contained, auto-rebuilding `HTML` map: center → 5 categories → 24 topics; click a topic to read an LLM-written narrative overview and its posts (grouped by author, newest first, with read/unread tracking).
+- **Today's reading queue** (`今日待看.html`) — a newest-first to-read list = items you haven't finished + freshly scraped ones. Tick "read" to clear each from the queue; write reflections per item with a built-in **knowledge-card template**. Read state and notes are saved in the browser and survive the daily rebuild.
 - **Weekly digest** — every Sunday 20:00, summarizes the past week's highlights and pushes to a Feishu group.
 - **Semantic Q&A (lightweight RAG)** — `python src/ask.py "what does X say about gold"` retrieves relevant posts and answers with citations.
 - **Cookie-expiry alerts** — pushes a Feishu bot message when the ZSXQ login goes stale.
@@ -34,6 +35,7 @@ Automatically scrapes the **owner posts** and **digests** of specified [ZSXQ (�
 ZSXQ v2 API  ──scrape──▶  normalize/clean  ──enrich (LLM)──▶  Feishu Bitable
    (owner + digests)         (dedup)          summary/tags/topic      │
                                                                       ├─▶ Knowledge graph (HTML, auto-rebuilt daily)
+                                                                      ├─▶ Today's reading queue (HTML, auto-rebuilt daily)
                                                                       ├─▶ Weekly digest (Feishu group, Sundays)
                                                                       └─▶ Semantic Q&A (CLI)
 ```
@@ -74,6 +76,7 @@ Python 3 · `requests` · `python-dotenv` · `jieba` · `openai` (or `anthropic`
 |---|---|
 | `python src/main.py [--force]` | Daily scrape → enrich → write to Feishu → rebuild graph |
 | `python src/build_graph.py [--refresh]` | Rebuild the knowledge-graph HTML (`--refresh` re-generates all topic overviews) |
+| `python src/build_reading.py` | Rebuild the "today's reading queue" HTML |
 | `python src/weekly_report.py [--dry]` | Generate & push the weekly digest (`--dry` prints only) |
 | `python src/ask.py "your question"` | Command-line semantic Q&A over the collected content |
 | `python src/backfill_enrich.py` | Back-fill summaries/tags for existing records (run once) |
@@ -92,6 +95,7 @@ src/
   summarizer.py      # swappable LLM layer: enrich() + chat()
   topics.py          # 24-topic taxonomy (knowledge-graph backbone)
   build_graph.py     # generate/refresh the knowledge-graph HTML
+  build_reading.py   # generate/refresh the "today's reading queue" HTML
   weekly_report.py   # weekly digest
   ask.py             # semantic Q&A CLI
   main.py            # daily entry point
@@ -103,7 +107,7 @@ scripts/
 ## Notes
 
 - Uses ZSXQ's **unofficial** web API; header/version values may need occasional updates if ZSXQ tightens anti-scraping. Details and troubleshooting are in [CLAUDE.md](CLAUDE.md).
-- Secrets live only in `.env` (git-ignored). The generated `知识图谱.html`, logs, and dedup state are git-ignored too.
+- Secrets live only in `.env` (git-ignored). The generated `知识图谱.html`, `今日待看.html`, logs, and dedup state are git-ignored too.
 - Designed for personal use on a local Windows machine.
 
 ## License
