@@ -46,11 +46,23 @@ def build():
             "topic": fd.get("专题", "") or "", "likes": to_int(fd.get("点赞数")),
             "sum": summ, "link": (fd.get("原文链接") or {}).get("link", ""),
         })
+    # 同一帖子ID只留一条（同帖被抓/加工两遍会产生重复记录，导致面板里"点了看了还出现"）
+    seen, uniq = set(), []
+    for p in posts:
+        if p["id"] and p["id"] in seen:
+            continue
+        seen.add(p["id"])
+        uniq.append(p)
+    posts = uniq
     posts.sort(key=lambda p: p["ts"], reverse=True)  # 最新在前
     html = TEMPLATE.replace("__DATA__", json.dumps(posts, ensure_ascii=False)) \
                    .replace("__UPDATED__", f"{datetime.now():%Y-%m-%d %H:%M}") \
                    .replace("__TOTAL__", str(len(posts)))
     OUT.write_text(html, encoding="utf-8")
+    # 顺手落一份帖子数据缓存，供「驾驶舱」面板离线快速读取（避免每次开面板都拉飞书）
+    config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (config.STATE_DIR / "reading_posts.json").write_text(
+        json.dumps(posts, ensure_ascii=False), encoding="utf-8")
     logging.info(f"今日待看已生成: {OUT}（候选 {len(posts)} 条）")
 
 
@@ -79,11 +91,15 @@ textarea:focus{outline:none;border-color:#1a6dc4;background:#fff}
 details{margin-top:24px}summary{cursor:pointer;color:#888;font-size:14px}
 .empty{color:#aaa;text-align:center;padding:40px 0;font-size:15px}
 .savedhint{font-size:11px;color:#37a06a;margin-left:8px;opacity:0;transition:opacity .3s}
+.expbtn{display:inline-block;margin:0 0 14px;padding:7px 14px;border:none;border-radius:8px;background:#1a6dc4;color:#fff;font-size:13.5px;font-weight:600;cursor:pointer}
+.expbtn:hover{background:#155aa8}.expbtn:disabled{background:#c7ced6;cursor:default}
 </style></head><body><div class="wrap">
 <h1>今日待看</h1>
 <div class="sub">姜胡说 · 珍大户的经济圈　|　更新于 __UPDATED__</div>
 <div class="hint">最新在最上面。看完勾「看了」它就消失；不勾就留到下次继续待看。可在下面写感想（点「填入知识卡片模板」）。已看和感想都存在本机浏览器，每天自动刷新也不会丢。</div>
 <div class="stat" id="stat"></div>
+<button id="export" class="expbtn" disabled>⬇ 导出为知识卡片</button>
+<span id="dumpbtn" style="margin-left:12px;font-size:12.5px;color:#1a6dc4;cursor:pointer">⤓ 迁移到面板（导出我的已看/感想）</span>
 <div id="list"></div>
 <details id="donebox"><summary></summary><div id="donelist"></div></details>
 </div>
@@ -106,6 +122,7 @@ function render(){
   const queue=DATA.filter(p=>s[p.id]==='queue');
   const done=DATA.filter(p=>s[p.id]==='done');
   document.getElementById('stat').textContent='待看 '+queue.length+' 条　·　已看 '+done.length+' 条';
+  updateExportBtn(notes);
   const list=document.getElementById('list');
   list.innerHTML = queue.length? queue.map(p=>card(p,notes,false)).join('')
     : '<div class="empty">🎉 待看清单已清空，去喝杯茶吧</div>';
@@ -135,6 +152,53 @@ function bind(){
     });
   });
 }
+// —— 导出为知识卡片：写入本地知识库文件夹（不支持则回退为下载）——
+function cardable(notes){
+  const carded=LS('todo_carded','{}');
+  return DATA.filter(p=>{const n=(notes[p.id]||'').trim();return n && !carded[p.id];});
+}
+function updateExportBtn(notes){
+  const n=cardable(notes).length;const b=document.getElementById('export');
+  b.textContent='⬇ 导出为知识卡片'+(n?'（'+n+'）':'');b.disabled=!n;
+}
+function sanitize(s){return (s||'card').replace(/[\\/:*?"<>|\n\r]/g,' ').replace(/\s+/g,' ').trim().slice(0,60)||'card';}
+function buildCard(p,note){
+  return '# '+p.sum+'\n\n'
+   +'- 来源：知识星球 · '+p.planet+' · '+p.author+' · '+p.date+'\n'
+   +'- 原文：'+p.link+'\n'
+   +(p.topic?'- 专题：'+p.topic+'\n':'')
+   +'\n## 我的思考\n'+note+'\n';
+}
+function markCarded(list){const c=LS('todo_carded','{}');list.forEach(p=>c[p.id]=1);localStorage.setItem('todo_carded',JSON.stringify(c));render();}
+let dirHandle=null;
+async function exportCards(){
+  const notes=LS('todo_notes','{}');const list=cardable(notes);
+  if(!list.length){alert('没有可导出的卡片：先在下面写点感想再导出（已导出过的不再重复）。');return;}
+  if(window.showDirectoryPicker){
+    try{
+      if(!dirHandle){alert('请选择要写入的文件夹（建议选知识库的 02-Areas）。');dirHandle=await window.showDirectoryPicker({mode:'readwrite'});}
+      for(const p of list){
+        const fh=await dirHandle.getFileHandle(sanitize(p.sum)+'.md',{create:true});
+        const w=await fh.createWritable();await w.write(buildCard(p,notes[p.id]));await w.close();
+      }
+      markCarded(list);alert('已写入 '+list.length+' 张卡片到所选文件夹。');return;
+    }catch(e){if(e&&e.name==='AbortError')return;/* 其它失败 → 回退下载 */}
+  }
+  const md=list.map(p=>buildCard(p,notes[p.id])).join('\n---\n\n');
+  const blob=new Blob([md],{type:'text/markdown;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  const d=new Date().toISOString().slice(0,10);a.download='星球卡片_'+d+'.md';a.click();URL.revokeObjectURL(a.href);
+  markCarded(list);
+  alert('已导出 '+list.length+' 张卡片到下载文件夹（星球卡片_'+d+'.md）。把它拖进知识库的 00-Inbox 即可。');
+}
+document.getElementById('export').addEventListener('click',exportCards);
+// 一次性迁移：把浏览器里的已看/感想导出成 JSON，导入到「驾驶舱」面板，避免丢失
+document.getElementById('dumpbtn').addEventListener('click',function(){
+  var data={status:LS('todo_status','{}'),notes:LS('todo_notes','{}'),carded:LS('todo_carded','{}')};
+  var blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='待看迁移数据.json';a.click();URL.revokeObjectURL(a.href);
+  alert('已导出「待看迁移数据.json」到下载文件夹。到面板的「待看」页点「导入旧记录」选它即可，一次就行。');
+});
 render();
 </script></body></html>'''
 

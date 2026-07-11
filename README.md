@@ -104,6 +104,10 @@ scripts/
   run_daily.ps1 / run_weekly.ps1 / setup_task.ps1   # Windows scheduling
 ```
 
+## Companion: knowledge-base cockpit (optional)
+
+`src/panel.py` is a small local dashboard (`http://localhost:8825`) that ties the scraped content into a personal Markdown knowledge base (`KB_DIR`): quick-capture notes, a **to-read queue** (same data as `今日待看.html`, but read/notes state is saved server-side so it survives cache clears), drag-in files, full-text search, and Claude-powered "organize notes into cards / write a script" actions. Run with `python src/panel.py`. Needs `KB_DIR` set; the AI buttons need `PANEL_LLM_*` in `.env`. Companion helpers: `capture.py` (quick note), `import_biji.py` (import notes), `backup_kb.py` (git-backup the KB).
+
 ## Notes
 
 - Uses ZSXQ's **unofficial** web API; header/version values may need occasional updates if ZSXQ tightens anti-scraping. Details and troubleshooting are in [CLAUDE.md](CLAUDE.md).

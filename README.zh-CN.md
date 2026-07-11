@@ -104,6 +104,10 @@ scripts/
   run_daily.ps1 / run_weekly.ps1 / setup_task.ps1   # Windows 定时
 ```
 
+## 附带：知识库驾驶舱（可选）
+
+`src/panel.py` 是一个本地小面板（`http://localhost:8825`），把抓到的内容接进你自己的 Markdown 知识库（`KB_DIR`）：速记、**待看队列**（和 `今日待看.html` 同一份数据，但已看/感想状态存在服务端，清缓存也不丢）、拖文件、全库搜索，以及 Claude 驱动的「整理成卡片 / 写口播」。用 `python src/panel.py` 启动；需设置 `KB_DIR`，AI 按钮需要 `.env` 里的 `PANEL_LLM_*`。配套小工具：`capture.py`（速记）、`import_biji.py`（导入笔记）、`backup_kb.py`（给知识库做 git 备份）。
+
 ## 说明
 
 - 使用知识星球**非官方**网页接口；若某天被加强反爬，请求头/版本号可能需要偶尔更新。踩坑与排查详见 [CLAUDE.md](CLAUDE.md)。

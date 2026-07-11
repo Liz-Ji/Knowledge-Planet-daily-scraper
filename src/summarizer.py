@@ -32,21 +32,30 @@ def is_configured() -> bool:
     return bool((config.LLM_PROVIDER or "").strip() and config.LLM_API_KEY.strip())
 
 
-def chat(system: str, user: str, max_tokens: int = 1500, temperature: float = 0.3) -> str:
-    """通用单轮补全，返回纯文本。按 .env 的 provider 选择底层模型。"""
-    provider = (config.LLM_PROVIDER or "").strip().lower()
-    model = config.LLM_MODEL.strip()
+def chat(system: str, user: str, max_tokens: int = 1500, temperature: float = 0.3,
+         *, provider: str = None, model: str = None, api_key: str = None,
+         base_url: str = None) -> str:
+    """通用单轮补全，返回纯文本。默认按后台 .env 的 LLM_*；也可显式传入覆盖
+    （面板用 PANEL_LLM_* 走 Claude，后台仍用 DeepSeek，互不影响）。"""
+    provider = (provider if provider is not None else config.LLM_PROVIDER or "").strip().lower()
+    model = (model if model is not None else config.LLM_MODEL or "").strip()
+    api_key = api_key if api_key is not None else config.LLM_API_KEY
+    base_url = base_url if base_url is not None else config.LLM_BASE_URL
     if provider == "claude":
         import anthropic  # 延迟导入
-        client = anthropic.Anthropic(api_key=config.LLM_API_KEY)
-        resp = client.messages.create(
-            model=model or "claude-opus-4-8", max_tokens=max_tokens,
-            system=system, messages=[{"role": "user", "content": user}],
-        )
+        client = anthropic.Anthropic(api_key=api_key)
+        # 关闭 extended thinking：这些是结构化抽取/生成任务，开着会把 token 预算耗在思考上、
+        # 甚至只返回 thinking 没有正文（踩过：15条笔记整理时 6000 token 全花在思考、正文为空）。
+        kwargs = dict(model=model or "claude-opus-4-8", max_tokens=max_tokens,
+                      system=system, messages=[{"role": "user", "content": user}])
+        try:
+            resp = client.messages.create(thinking={"type": "disabled"}, **kwargs)
+        except Exception:
+            resp = client.messages.create(**kwargs)  # 老模型不认 thinking 参数则退回
         return next((b.text for b in resp.content if b.type == "text"), "")
     # 其余一律走 OpenAI 兼容接口（deepseek / openai / 通义 / kimi / 智谱 …）
     from openai import OpenAI  # 延迟导入
-    client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL or None)
+    client = OpenAI(api_key=api_key, base_url=base_url or None)
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
